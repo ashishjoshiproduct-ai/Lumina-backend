@@ -8,7 +8,7 @@ app = Flask(__name__)
 CORS(app)
 
 def extract_text_from_pdf(pdf_bytes):
-    """Extract text from PDF using pdfplumber with column-aware sorting."""
+    """Extract text from PDF using pdfplumber."""
     try:
         pdf = pdfplumber.open(io.BytesIO(pdf_bytes))
     except Exception as e:
@@ -18,73 +18,26 @@ def extract_text_from_pdf(pdf_bytes):
     
     for page_num, page in enumerate(pdf.pages):
         try:
-            pw = page.width
-            mid = pw / 2
+            # Try standard text extraction
+            text = page.extract_text()
             
-            # Extract all text with position info
-            text_dict = page.extract_text_dict()
-            if not text_dict or "text_dict" not in text_dict:
-                continue
-            
-            text_blocks = text_dict.get("text_dict", [])
-            if not text_blocks:
-                continue
-            
-            left_blocks = []
-            right_blocks = []
-            full_blocks = []
-            
-            for block in text_blocks:
-                bbox = block.get("bbox", [])
-                if len(bbox) < 4:
-                    continue
-                
-                x0, y0, x1, y1 = bbox
-                text = block.get("text", "").strip()
-                
-                if len(text) < 3:
-                    continue
-                
-                # Skip very short text (likely diagram labels)
-                lines = text.split("\n")
-                avg_line_len = sum(len(l) for l in lines) / max(len(lines), 1)
-                if avg_line_len < 20 and len(lines) <= 2 and len(text) < 50:
-                    continue
-                
-                block_width = x1 - x0
-                if block_width > pw * 0.6:  # full width
-                    full_blocks.append((y0, text))
-                elif x0 + block_width / 2 < mid:  # left column
-                    left_blocks.append((y0, text))
-                else:  # right column
-                    right_blocks.append((y0, text))
-            
-            # Sort by vertical position
-            full_blocks.sort(key=lambda b: b[0])
-            left_blocks.sort(key=lambda b: b[0])
-            right_blocks.sort(key=lambda b: b[0])
-            
-            # Separate full-width header from footer
-            body_start_y = min(
-                (left_blocks[0][0] if left_blocks else 999),
-                (right_blocks[0][0] if right_blocks else 999)
-            )
-            
-            header = [(y, t) for y, t in full_blocks if y < body_start_y]
-            footer = [(y, t) for y, t in full_blocks if y >= body_start_y]
-            
-            # Combine: header + left col + right col + footer
-            ordered = header + left_blocks + right_blocks + footer
-            page_text = "\n\n".join(t for _, t in ordered)
-            
-            if page_text.strip():
-                all_text.append(page_text)
+            if text and text.strip():
+                all_text.append(text)
+            else:
+                # Fallback: try layout mode
+                text = page.extract_text(layout=True)
+                if text and text.strip():
+                    all_text.append(text)
         except Exception as e:
-            # Skip this page if extraction fails
+            # Skip pages that fail
             continue
     
     pdf.close()
-    return "\n\n---PAGE BREAK---\n\n".join(all_text)
+    
+    if not all_text:
+        raise ValueError("No text could be extracted from this PDF")
+    
+    return "\n\n".join(all_text)
 
 @app.route("/extract", methods=["POST"])
 def extract():
